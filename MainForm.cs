@@ -13,7 +13,9 @@ public sealed class MainForm : Form
     private static readonly Color TextMuted = Color.FromArgb(143, 158, 177);
     private static readonly Color Teal = Color.FromArgb(46, 205, 177);
     private static readonly Color Amber = Color.FromArgb(249, 183, 73);
+    private static readonly Color RtdGreen = Color.FromArgb(76, 207, 125);
     private static readonly Color Red = Color.FromArgb(246, 103, 103);
+    private const float DetailBodyFontSize = 8.5F;
 
     private readonly TrafficBuffer _traffic = new();
     private readonly IdentifierRegistry _registry = new();
@@ -29,15 +31,17 @@ public sealed class MainForm : Form
     private Label _hardwareLabel = null!;
     private Label _captureLabel = null!;
     private Label _selectedHint = null!;
+    private Label _rtdStatusLabel = null!;
+    private Label _detailBusInfo = null!;
+    private Label _detailHeading = null!;
     private Label _detailId = null!;
     private Label _detailType = null!;
-    private Label _detailDlc = null!;
-    private Label _detailData = null!;
-    private Label _detailChannel = null!;
     private Label _detailTime = null!;
-    private Label _detailArbitration = null!;
-    private Label _detailControl = null!;
-    private Label _detailProtocolNote = null!;
+    private Label _detailSender = null!;
+    private Label _detailLength = null!;
+    private Label _detailMessage = null!;
+    private readonly Label[] _detailByteValues = new Label[8];
+    private readonly Label[] _detailByteMeanings = new Label[8];
     private Panel _detailEmpty = null!;
     private Panel _detailContent = null!;
     private Button _startButton = null!;
@@ -45,6 +49,9 @@ public sealed class MainForm : Form
     private SplitContainer _mainSplit = null!;
     private long _version;
     private long _renderedVersion = -1;
+    private bool _hasRtdState;
+    private RtdState _lastRtdState = RtdState.Unknown;
+    private bool _syncingIdentifierSelection;
     private bool _closing;
 
     public MainForm()
@@ -79,21 +86,27 @@ public sealed class MainForm : Form
             Dock = DockStyle.Top,
             Height = 30,
             BackColor = Surface,
-            ForeColor = TextPrimary,
+            ForeColor = Color.White,
             Renderer = new DarkMenuRenderer()
         };
 
-        var file = new ToolStripMenuItem("File");
+        var file = new ToolStripMenuItem("File") { ForeColor = Color.White };
+        file.DropDown.ForeColor = Color.White;
+        file.DropDown.Renderer = new DarkMenuRenderer();
         file.DropDownItems.Add(CreateMenuItem("Import capture…", "Ctrl+O", (_, _) => ImportCapture()));
         file.DropDownItems.Add(CreateMenuItem("Export retained traffic…", "Ctrl+S", (_, _) => ExportCapture()));
         file.DropDownItems.Add(new ToolStripSeparator());
         file.DropDownItems.Add(CreateMenuItem("Exit", "Alt+F4", (_, _) => Close()));
 
-        var identifiers = new ToolStripMenuItem("Identifiers");
+        var identifiers = new ToolStripMenuItem("Identifiers") { ForeColor = Color.White };
+        identifiers.DropDown.ForeColor = Color.White;
+        identifiers.DropDown.Renderer = new DarkMenuRenderer();
         identifiers.DropDownItems.Add(CreateMenuItem("Name observed identifiers…", "Ctrl+I", (_, _) => OpenIdentifierEditor()));
         identifiers.DropDownItems.Add(CreateMenuItem("Open identifier file", string.Empty, (_, _) => OpenIdentifierFile()));
 
-        var view = new ToolStripMenuItem("View");
+        var view = new ToolStripMenuItem("View") { ForeColor = Color.White };
+        view.DropDown.ForeColor = Color.White;
+        view.DropDown.Renderer = new DarkMenuRenderer();
         view.DropDownItems.Add(CreateMenuItem("Clear retained traffic", string.Empty, (_, _) => ClearTraffic()));
         view.DropDownItems.Add(CreateMenuItem("Reset filters", string.Empty, (_, _) => ResetFilters()));
 
@@ -106,7 +119,11 @@ public sealed class MainForm : Form
 
     private static ToolStripMenuItem CreateMenuItem(string text, string shortcut, EventHandler handler)
     {
-        var item = new ToolStripMenuItem(text) { ShortcutKeyDisplayString = shortcut };
+        var item = new ToolStripMenuItem(text)
+        {
+            ForeColor = Color.White,
+            ShortcutKeyDisplayString = shortcut
+        };
         item.Click += handler;
         return item;
     }
@@ -275,7 +292,7 @@ public sealed class MainForm : Form
             AllowUserToDeleteRows = false,
             AllowUserToResizeRows = false,
             ReadOnly = true,
-            MultiSelect = false,
+            MultiSelect = true,
             SelectionMode = DataGridViewSelectionMode.FullRowSelect,
             EnableHeadersVisualStyles = false,
             ColumnHeadersHeight = 34,
@@ -306,13 +323,10 @@ public sealed class MainForm : Form
         };
         _grid.AlternatingRowsDefaultCellStyle = new DataGridViewCellStyle { BackColor = Color.FromArgb(25, 34, 47) };
         AddColumn("Time", "time", 102);
-        AddColumn("Channel", "channel", 112);
         AddColumn("Identifier", "id", 105);
         AddColumn("Name", "name", 160);
-        AddColumn("Frame", "frame", 86);
-        AddColumn("DLC", "dlc", 52);
-        AddColumn("Data", "data", 250, DataGridViewAutoSizeColumnMode.Fill);
-        AddColumn("Bitrate", "rate", 90);
+        AddColumn("Data", "data", 250);
+        AddColumn("Message", "message", 250, DataGridViewAutoSizeColumnMode.Fill);
         _grid.CellValueNeeded += GridOnCellValueNeeded;
         _grid.SelectionChanged += GridOnSelectionChanged;
         _grid.CellFormatting += GridOnCellFormatting;
@@ -322,19 +336,37 @@ public sealed class MainForm : Form
 
     private void AddColumn(string header, string name, int width, DataGridViewAutoSizeColumnMode mode = DataGridViewAutoSizeColumnMode.None)
     {
-        var column = new DataGridViewTextBoxColumn { HeaderText = header, Name = name, Width = width, SortMode = DataGridViewColumnSortMode.NotSortable };
-        if (mode != DataGridViewAutoSizeColumnMode.None)
-            column.AutoSizeMode = mode;
+        var column = new DataGridViewTextBoxColumn
+        {
+            HeaderText = header,
+            Name = name,
+            Width = width,
+            SortMode = DataGridViewColumnSortMode.NotSortable,
+            AutoSizeMode = mode == DataGridViewAutoSizeColumnMode.None
+                ? DataGridViewAutoSizeColumnMode.AllCells
+                : mode
+        };
         _grid.Columns.Add(column);
     }
 
     private Control BuildDetailPanel()
     {
         var outer = new Panel { Dock = DockStyle.Fill, BackColor = Surface, Padding = new Padding(18, 16, 18, 12) };
-        var heading = MakeLabel("FRAME INSPECTOR", TextMuted, 8.5F, ContentAlignment.MiddleLeft);
-        heading.Dock = DockStyle.Top;
-        heading.Height = 25;
-        outer.Controls.Add(heading);
+        _rtdStatusLabel = MakeLabel("RTD: —", TextMuted, DetailBodyFontSize, ContentAlignment.MiddleLeft);
+        _rtdStatusLabel.Dock = DockStyle.Top;
+        _rtdStatusLabel.Height = 28;
+
+        _detailBusInfo = MakeLabel("Channel · bitrate: —", TextMuted, DetailBodyFontSize, ContentAlignment.MiddleLeft);
+        _detailBusInfo.Dock = DockStyle.Top;
+        _detailBusInfo.Height = 25;
+
+        _detailHeading = MakeLabel("FRAME INSPECTOR", TextMuted, 8.5F, ContentAlignment.BottomLeft);
+        _detailHeading.Padding = new Padding(0, 0, 0, 3);
+        _detailHeading.Dock = DockStyle.Top;
+        _detailHeading.Height = 25;
+        outer.Controls.Add(_detailHeading);
+        outer.Controls.Add(_rtdStatusLabel);
+        outer.Controls.Add(_detailBusInfo);
 
         _detailEmpty = new Panel { Dock = DockStyle.Fill, BackColor = Surface };
         var emptyStack = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 3, ColumnCount = 1, BackColor = Surface, Padding = new Padding(10, 160, 10, 0) };
@@ -348,7 +380,11 @@ public sealed class MainForm : Form
         emptyStack.Controls.Add(emptyTitle, 0, 1);
         emptyStack.Controls.Add(emptyText, 0, 2);
         _detailEmpty.Controls.Add(emptyStack);
+        _detailEmpty.Visible = false;
         outer.Controls.Add(_detailEmpty);
+        _detailHeading.Visible = false;
+        _rtdStatusLabel.Visible = false;
+        _detailBusInfo.Visible = false;
 
         _detailContent = new Panel { Dock = DockStyle.Fill, BackColor = Surface, Visible = false, AutoScroll = true };
         var content = new FlowLayoutPanel
@@ -361,8 +397,6 @@ public sealed class MainForm : Form
             Padding = new Padding(0, 4, 0, 0)
         };
         content.Controls.Add(BuildDetailIdentityCard());
-        content.Controls.Add(BuildDetailSection("RAW FRAME", BuildRawFramePanel()));
-        content.Controls.Add(BuildDetailSection("PROTOCOL FIELDS", BuildProtocolPanel()));
         _detailContent.Controls.Add(content);
         outer.Controls.Add(_detailContent);
         return outer;
@@ -370,77 +404,70 @@ public sealed class MainForm : Form
 
     private Control BuildDetailIdentityCard()
     {
-        var card = new Panel { Width = 330, Height = 108, BackColor = SurfaceRaised, Padding = new Padding(14, 11, 14, 9), Margin = new Padding(0, 0, 0, 12) };
-        _detailId = MakeLabel("—", TextPrimary, 19F, ContentAlignment.MiddleLeft);
-        _detailId.Dock = DockStyle.Top;
-        _detailId.Height = 31;
-        card.Controls.Add(_detailId);
-        _detailType = MakeLabel("—", Teal, 8.5F, ContentAlignment.MiddleLeft);
-        _detailType.Dock = DockStyle.Top;
-        _detailType.Height = 22;
-        card.Controls.Add(_detailType);
-        _detailTime = MakeLabel("—", TextMuted, 8.5F, ContentAlignment.MiddleLeft);
-        _detailTime.Dock = DockStyle.Fill;
-        card.Controls.Add(_detailTime);
+        var card = new Panel { Width = 330, Height = 378, BackColor = SurfaceRaised, Padding = new Padding(14, 10, 14, 10), Margin = new Padding(0, 0, 0, 12) };
+        var table = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 3,
+            RowCount = 15,
+            BackColor = SurfaceRaised,
+            Padding = new Padding(0)
+        };
+        table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 35));
+        table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 23));
+        table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 42));
+        for (var i = 0; i < 6; i++)
+            table.RowStyles.Add(new RowStyle(SizeType.Absolute, 23));
+        table.RowStyles.Add(new RowStyle(SizeType.Absolute, 24));
+        for (var i = 0; i < 8; i++)
+            table.RowStyles.Add(new RowStyle(SizeType.Absolute, 22));
+
+        _detailId = MakeLabel("—", TextPrimary, DetailBodyFontSize, ContentAlignment.MiddleLeft);
+        _detailType = MakeLabel("—", Teal, DetailBodyFontSize, ContentAlignment.MiddleLeft);
+        _detailSender = MakeLabel("—", TextPrimary, DetailBodyFontSize, ContentAlignment.MiddleLeft);
+        _detailLength = MakeLabel("—", TextPrimary, DetailBodyFontSize, ContentAlignment.MiddleLeft);
+        _detailMessage = MakeLabel("—", TextPrimary, DetailBodyFontSize, ContentAlignment.MiddleLeft);
+        _detailTime = MakeLabel("—", TextMuted, DetailBodyFontSize, ContentAlignment.MiddleLeft);
+        AddInspectorRow(table, 0, "Identifier", _detailId);
+        AddInspectorRow(table, 1, "Frame", _detailType);
+        AddInspectorRow(table, 2, "Sender", _detailSender);
+        AddInspectorRow(table, 3, "Length", _detailLength);
+        AddInspectorRow(table, 4, "Message", _detailMessage);
+        AddInspectorRow(table, 5, "Time", _detailTime);
+        table.SetColumnSpan(_detailId, 2);
+        table.SetColumnSpan(_detailType, 2);
+        table.SetColumnSpan(_detailSender, 2);
+        table.SetColumnSpan(_detailLength, 2);
+        table.SetColumnSpan(_detailMessage, 2);
+        table.SetColumnSpan(_detailTime, 2);
+
+        AddInspectorHeader(table, 6, "Byte", "Value", "Meaning");
+        for (var i = 0; i < 8; i++)
+        {
+            var index = MakeLabel($"Byte {i}", TextMuted, DetailBodyFontSize, ContentAlignment.MiddleLeft);
+            _detailByteValues[i] = MakeLabel("—", TextPrimary, DetailBodyFontSize, ContentAlignment.MiddleLeft);
+            _detailByteMeanings[i] = MakeLabel("—", TextMuted, DetailBodyFontSize, ContentAlignment.MiddleLeft);
+            table.Controls.Add(index, 0, i + 7);
+            table.Controls.Add(_detailByteValues[i], 1, i + 7);
+            table.Controls.Add(_detailByteMeanings[i], 2, i + 7);
+        }
+        card.Controls.Add(table);
         return card;
     }
 
-    private Control BuildDetailSection(string title, Control body)
+    private static void AddInspectorRow(TableLayoutPanel table, int row, string key, Control value)
     {
-        var section = new Panel { Width = 330, Height = body.Height + 45, BackColor = Surface, Margin = new Padding(0, 0, 0, 10) };
-        var header = MakeLabel(title, TextMuted, 8F, ContentAlignment.MiddleLeft);
-        header.Dock = DockStyle.Top;
-        header.Height = 24;
-        section.Controls.Add(header);
-        body.Dock = DockStyle.Fill;
-        section.Controls.Add(body);
-        return section;
-    }
-
-    private Control BuildRawFramePanel()
-    {
-        var panel = new Panel { Height = 102, BackColor = SurfaceRaised, Padding = new Padding(14, 11, 14, 10) };
-        _detailData = MakeLabel("—", TextPrimary, 11F, ContentAlignment.MiddleLeft);
-        _detailData.Dock = DockStyle.Top;
-        _detailData.Height = 34;
-        panel.Controls.Add(_detailData);
-        _detailChannel = MakeLabel("—", TextMuted, 8.5F, ContentAlignment.MiddleLeft);
-        _detailChannel.Dock = DockStyle.Top;
-        _detailChannel.Height = 25;
-        panel.Controls.Add(_detailChannel);
-        _detailDlc = MakeLabel("—", TextMuted, 8.5F, ContentAlignment.MiddleLeft);
-        _detailDlc.Dock = DockStyle.Fill;
-        panel.Controls.Add(_detailDlc);
-        return panel;
-    }
-
-    private Control BuildProtocolPanel()
-    {
-        var panel = new Panel { Height = 180, BackColor = SurfaceRaised, Padding = new Padding(14, 12, 14, 10) };
-        var table = new TableLayoutPanel { Dock = DockStyle.Top, Height = 115, ColumnCount = 2, RowCount = 4, BackColor = SurfaceRaised };
-        table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 43));
-        table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 57));
-        for (var i = 0; i < 4; i++) table.RowStyles.Add(new RowStyle(SizeType.Absolute, 27));
-        _detailArbitration = MakeLabel("—", TextPrimary, 8.5F, ContentAlignment.MiddleLeft);
-        _detailControl = MakeLabel("—", TextPrimary, 8.5F, ContentAlignment.MiddleLeft);
-        AddProtocolRow(table, 0, "Arbitration", _detailArbitration);
-        AddProtocolRow(table, 1, "Control", _detailControl);
-        AddProtocolRow(table, 2, "SOF", MakeLabel("dominant", TextMuted, 8.5F, ContentAlignment.MiddleLeft));
-        AddProtocolRow(table, 3, "ACK / EOF", MakeLabel("wire fields not exposed", TextMuted, 8.5F, ContentAlignment.MiddleLeft));
-        panel.Controls.Add(table);
-        _detailProtocolNote = MakeLabel("PCAN-Basic provides decoded frame fields, not the raw bit-level CRC and ACK sequence.", TextMuted, 8F, ContentAlignment.TopLeft);
-        _detailProtocolNote.Dock = DockStyle.Bottom;
-        _detailProtocolNote.Height = 52;
-        panel.Controls.Add(_detailProtocolNote);
-        return panel;
-    }
-
-    private static void AddProtocolRow(TableLayoutPanel table, int row, string key, Control value)
-    {
-        var keyLabel = MakeLabel(key, TextMuted, 8.5F, ContentAlignment.MiddleLeft);
+        var keyLabel = MakeLabel(key, TextMuted, DetailBodyFontSize, ContentAlignment.MiddleLeft);
         value.Dock = DockStyle.Fill;
         table.Controls.Add(keyLabel, 0, row);
         table.Controls.Add(value, 1, row);
+    }
+
+    private static void AddInspectorHeader(TableLayoutPanel table, int row, string first, string second, string third)
+    {
+        table.Controls.Add(MakeLabel(first, TextMuted, DetailBodyFontSize, ContentAlignment.MiddleLeft), 0, row);
+        table.Controls.Add(MakeLabel(second, TextMuted, DetailBodyFontSize, ContentAlignment.MiddleLeft), 1, row);
+        table.Controls.Add(MakeLabel(third, TextMuted, DetailBodyFontSize, ContentAlignment.MiddleLeft), 2, row);
     }
 
     private Control BuildFooter()
@@ -461,6 +488,47 @@ public sealed class MainForm : Form
         var name = _registry.GetName(frame.Identifier, frame.IsExtended);
         _traffic.Add(frame with { IdentifierName = name });
         Interlocked.Increment(ref _version);
+
+        if (CanFrameDecoder.TryGetRtdState(frame, out var rtdState))
+        {
+            _lastRtdState = rtdState;
+            _hasRtdState = true;
+            try
+            {
+                BeginInvoke(() => ApplyRtdStatus(rtdState));
+            }
+            catch (InvalidOperationException) { }
+        }
+    }
+
+    private void ApplyRtdStatus(RtdState state)
+    {
+        _rtdStatusLabel.Text = state switch
+        {
+            RtdState.TrueValue => "RTD: True",
+            RtdState.FalseValue => "RTD: False",
+            _ => "RTD: Unknown"
+        };
+        _rtdStatusLabel.ForeColor = state switch
+        {
+            RtdState.TrueValue => Amber,
+            RtdState.FalseValue => RtdGreen,
+            _ => Red
+        };
+    }
+
+    private void UpdateRtdStatusFromFrames(IEnumerable<CanFrame> frames)
+    {
+        foreach (var frame in frames)
+        {
+            if (!CanFrameDecoder.TryGetRtdState(frame, out var rtdState))
+                continue;
+            _lastRtdState = rtdState;
+            _hasRtdState = true;
+        }
+
+        if (_hasRtdState)
+            ApplyRtdStatus(_lastRtdState);
     }
 
     private void MonitorOnStatusChanged(object? sender, MonitorStatusEventArgs status)
@@ -563,13 +631,10 @@ public sealed class MainForm : Form
         e.Value = _grid.Columns[e.ColumnIndex].Name switch
         {
             "time" => frame.TimeText,
-            "channel" => frame.Channel,
             "id" => $"0x{frame.IdText}",
             "name" => frame.IdentifierName ?? "—",
-            "frame" => frame.FrameType,
-            "dlc" => frame.Dlc,
+            "message" => CanFrameDecoder.GetKnownMessage(frame) ?? string.Empty,
             "data" => frame.DataText,
-            "rate" => frame.Bitrate > 0 ? FormatRate(frame.Bitrate) : "—",
             _ => string.Empty
         };
     }
@@ -591,32 +656,63 @@ public sealed class MainForm : Form
     {
         if (_grid.CurrentCell is null || _grid.CurrentCell.RowIndex < 0 || _grid.CurrentCell.RowIndex >= _visibleFrames.Count)
         {
-            _detailEmpty.Visible = true;
+            _detailEmpty.Visible = false;
             _detailContent.Visible = false;
+            _detailHeading.Visible = false;
+            _rtdStatusLabel.Visible = false;
+            _detailBusInfo.Visible = false;
             _selectedHint.Text = "No frame selected";
             return;
         }
 
         var frame = _visibleFrames[_grid.CurrentCell.RowIndex];
+        if (!_syncingIdentifierSelection)
+        {
+            _syncingIdentifierSelection = true;
+            try
+            {
+                for (var rowIndex = 0; rowIndex < _visibleFrames.Count; rowIndex++)
+                {
+                    var candidate = _visibleFrames[rowIndex];
+                    _grid.Rows[rowIndex].Selected = candidate.Identifier == frame.Identifier && candidate.IsExtended == frame.IsExtended;
+                }
+            }
+            finally
+            {
+                _syncingIdentifierSelection = false;
+            }
+        }
+
+        var decoded = CanFrameDecoder.Decode(frame);
         _detailEmpty.Visible = false;
         _detailContent.Visible = true;
+        _detailHeading.Visible = true;
+        _rtdStatusLabel.Visible = true;
+        _detailBusInfo.Visible = true;
         _selectedHint.Text = $"Selected frame {frame.TimeText}";
         _detailId.Text = $"0x{frame.IdText}";
         _detailType.Text = frame.IdentifierName is null ? frame.FrameType.ToUpperInvariant() : $"{frame.FrameType.ToUpperInvariant()}  ·  {frame.IdentifierName}";
         _detailTime.Text = $"{frame.Timestamp.ToLocalTime():yyyy-MM-dd HH:mm:ss.fff} local time";
-        _detailData.Text = frame.Data.Length == 0 ? "NO DATA" : frame.DataText;
-        _detailChannel.Text = $"{frame.Channel}   ·   {FormatRate(frame.Bitrate)}";
-        _detailDlc.Text = $"DLC  {frame.Dlc}   ·   {frame.IsRemote switch { true => "remote request", false => "data frame" }}";
-        _detailArbitration.Text = frame.IsExtended ? $"0x{frame.IdText} · 29-bit" : $"0x{frame.IdText} · 11-bit";
-        _detailControl.Text = $"IDE {(frame.IsExtended ? "1" : "0")}   RTR {(frame.IsRemote ? "1" : "0")}   DLC {frame.Dlc}";
+        _detailSender.Text = decoded.Sender;
+        _detailLength.Text = decoded.Length;
+        _detailMessage.Text = decoded.Message;
+        foreach (var byteDecode in decoded.Bytes)
+        {
+            _detailByteValues[byteDecode.Index].Text = byteDecode.Value.HasValue ? $"0x{byteDecode.Value.Value:X2}" : "—";
+            _detailByteMeanings[byteDecode.Index].Text = byteDecode.Meaning;
+        }
+        _detailBusInfo.Text = $"{frame.Channel}   ·   {FormatRate(frame.Bitrate)}";
     }
 
     private void ClearTraffic()
     {
         _traffic.Clear();
         Interlocked.Increment(ref _version);
-        _detailEmpty.Visible = true;
+        _detailEmpty.Visible = false;
         _detailContent.Visible = false;
+        _detailHeading.Visible = false;
+        _rtdStatusLabel.Visible = false;
+        _detailBusInfo.Visible = false;
         RefreshGrid();
     }
 
@@ -669,6 +765,7 @@ public sealed class MainForm : Form
                 .ToArray();
             _traffic.Clear();
             _traffic.AddRange(frames);
+            UpdateRtdStatusFromFrames(frames);
             Interlocked.Increment(ref _version);
             _statusLabel.Text = "OFFLINE";
             _statusLabel.ForeColor = Teal;
@@ -722,7 +819,7 @@ public sealed class MainForm : Form
     }
 
     private static Label MakeLabel(string text, Color color, float size, ContentAlignment alignment)
-        => new() { Text = text, ForeColor = color, Font = new Font("Segoe UI", size), TextAlign = alignment, AutoEllipsis = true };
+        => new() { Text = text, ForeColor = color, Font = new Font("Segoe UI", size), TextAlign = alignment, AutoSize = false, AutoEllipsis = true };
 
     private static Button MakeButton(string text, Color foreground, Color background, int width)
         => new()
@@ -744,6 +841,12 @@ public sealed class MainForm : Form
     private sealed class DarkMenuRenderer : ToolStripProfessionalRenderer
     {
         public DarkMenuRenderer() : base(new DarkMenuColors()) { RoundedEdges = false; }
+
+        protected override void OnRenderItemText(ToolStripItemTextRenderEventArgs e)
+        {
+            e.TextColor = Color.White;
+            base.OnRenderItemText(e);
+        }
     }
 
     private sealed class DarkMenuColors : ProfessionalColorTable

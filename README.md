@@ -1,15 +1,16 @@
 # PCAN CAN Monitor
 
-Receive-only Windows desktop monitor for PEAK-System PCAN-USB hardware.
+Windows desktop monitor for PEAK-System PCAN-USB hardware.
 
 The project uses PEAK's `Peak.PCANBasic.NET` NuGet package (`5.1.0.1194`) for all hardware access. The package is the managed API wrapper; PEAK's native PCAN-Basic runtime must still be installed on Windows.
+
+Intended use is for project developments, especially on vehicles using MoTeC Data Acquisition Loggers.
 
 ## Features
 
 - Discovers PCAN-USB channels automatically; no channel configuration is required.
 - Probes common CAN bitrates by listening only, then remains in receive-only mode.
-- Displays standard, extended, and remote frames as raw hexadecimal data.
-- Decodes the CAN fields exposed by PCAN-Basic: arbitration ID, IDE, RTR, DLC, and payload.
+- Displays frames as raw hexadecimal data.
 - Retains the most recent 5,000 frames in memory.
 - Names observed identifiers from the **Identifiers** menu.
 - Persists names at `%LOCALAPPDATA%\PcanCanMonitor\identifiers.txt` in a human-editable format.
