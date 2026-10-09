@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<coreProperties xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns="http://schemas.openxmlformats.org/package/2006/metadata/core-properties">
+  <dc:creator>PEAK-System Technik GmbH,  Keneth Wagner Rivas</dc:creator>
+  <dc:description>PCAN-Basic.NET is an assembly for accessing and using the native PCAN-Basic API, a CAN library from PEAK-System Technik GmbH, in .NET environments. The assembly is written using .NET Standard 2.0 and it can be used under the operating systems Windows and Linux.</dc:description>
+  <dc:identifier>Peak.PCANBasic.NET</dc:identifier>
+  <version>5.1.0.1194</version>
+  <keywords>PCAN CAN CC FD XL CAN-CC CAN-FD CAN-XL Basic PCANBasic PCAN-Basic PEAK PEAK-System PCAN-USB PCAN-LAN PCAN-PCI Universal Linux HMS-Networks HMS</keywords>
+  <lastModifiedBy>NuGet, Version=5.10.0.7240, Culture=neutral, PublicKeyToken=31bf3856ad364e35;Microsoft Windows NT 10.0.20348.0;.NET Framework 4.7.2</lastModifiedBy>
+</coreProperties>

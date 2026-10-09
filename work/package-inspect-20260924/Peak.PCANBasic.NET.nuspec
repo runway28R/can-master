@@ -1,0 +1,25 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://schemas.microsoft.com/packaging/2013/05/nuspec.xsd">
+  <metadata>
+    <id>Peak.PCANBasic.NET</id>
+    <version>5.1.0.1194</version>
+    <authors>PEAK-System Technik GmbH, Keneth Wagner Rivas</authors>
+    <owners>PEAK-System Technik GmbH</owners>
+    <requireLicenseAcceptance>true</requireLicenseAcceptance>
+    <license type="file">docs\EULA_en.md</license>
+    <licenseUrl>https://aka.ms/deprecateLicenseUrl</licenseUrl>
+    <icon>images\Peak.png</icon>
+    <projectUrl>https://www.peak-system.com/PCAN-Basic.239.0.html</projectUrl>
+    <description>PCAN-Basic.NET is an assembly for accessing and using the native PCAN-Basic API, a CAN library from PEAK-System Technik GmbH, in .NET environments. The assembly is written using .NET Standard 2.0 and it can be used under the operating systems Windows and Linux.</description>
+    <summary>PCAN-Basic API for .NET environments under Windows and Linux operating systems</summary>
+    <releaseNotes>See https://www.peak-system.com/PCAN-Basic.126.0.html for more information.</releaseNotes>
+    <copyright>Copyright © 2026 PEAK-System Technik GmbH</copyright>
+    <tags>PCAN CAN CC FD XL CAN-CC CAN-FD CAN-XL Basic PCANBasic PCAN-Basic PEAK PEAK-System PCAN-USB PCAN-LAN PCAN-PCI Universal Linux HMS-Networks HMS</tags>
+    <readme>docs\readme.md</readme>
+    <dependencies>
+      <group targetFramework=".NETStandard2.0">
+        <dependency id="NETStandard.Library" version="1.6.1" exclude="Build,Analyzers" />
+      </group>
+    </dependencies>
+  </metadata>
+</package>
