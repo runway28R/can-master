@@ -46,6 +46,7 @@ public sealed class MainForm : Form
     private Panel _detailContent = null!;
     private Button _startButton = null!;
     private Button _stopButton = null!;
+    private ToolStripMenuItem _identifierListsMenu = null!;
     private SplitContainer _mainSplit = null!;
     private long _version;
     private long _renderedVersion = -1;
@@ -101,6 +102,11 @@ public sealed class MainForm : Form
         var identifiers = new ToolStripMenuItem("Identifiers") { ForeColor = Color.White };
         identifiers.DropDown.ForeColor = Color.White;
         identifiers.DropDown.Renderer = new DarkMenuRenderer();
+        _identifierListsMenu = new ToolStripMenuItem { ForeColor = Color.White };
+        _identifierListsMenu.DropDown.ForeColor = Color.White;
+        _identifierListsMenu.DropDown.Renderer = new DarkMenuRenderer();
+        identifiers.DropDownItems.Add(_identifierListsMenu);
+        identifiers.DropDownItems.Add(new ToolStripSeparator());
         identifiers.DropDownItems.Add(CreateMenuItem("Name observed identifiers…", "Ctrl+I", (_, _) => OpenIdentifierEditor()));
         identifiers.DropDownItems.Add(CreateMenuItem("Open identifier file", string.Empty, (_, _) => OpenIdentifierFile()));
 
@@ -115,6 +121,57 @@ public sealed class MainForm : Form
         menu.Items.Add(view);
         Controls.Add(menu);
         MainMenuStrip = menu;
+        RefreshIdentifierListMenu();
+    }
+
+    private void RefreshIdentifierListMenu()
+    {
+        _identifierListsMenu.Text = $"List: {_registry.ActiveListName}";
+        _identifierListsMenu.DropDownItems.Clear();
+
+        foreach (var listName in _registry.ListNames)
+        {
+            var item = CreateMenuItem(listName, string.Empty, (_, _) => SelectIdentifierList(listName));
+            item.Checked = string.Equals(listName, _registry.ActiveListName, StringComparison.OrdinalIgnoreCase);
+            _identifierListsMenu.DropDownItems.Add(item);
+        }
+
+        _identifierListsMenu.DropDownItems.Add(new ToolStripSeparator());
+        _identifierListsMenu.DropDownItems.Add(CreateMenuItem("Create new list…", string.Empty, (_, _) => CreateIdentifierList()));
+    }
+
+    private void SelectIdentifierList(string listName)
+    {
+        try
+        {
+            _registry.SelectList(listName);
+            RefreshIdentifierListMenu();
+            RemapTrafficNames();
+        }
+        catch (Exception exception)
+        {
+            AppLog.Error($"Could not select identifier list '{listName}'.", exception);
+            MessageBox.Show(this, exception.Message, "Identifier list", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+    }
+
+    private void CreateIdentifierList()
+    {
+        using var dialog = new IdentifierListNameForm();
+        if (dialog.ShowDialog(this) != DialogResult.OK)
+            return;
+
+        try
+        {
+            _registry.CreateList(dialog.ListName);
+            RefreshIdentifierListMenu();
+            RemapTrafficNames();
+        }
+        catch (Exception exception)
+        {
+            AppLog.Error($"Could not create identifier list '{dialog.ListName}'.", exception);
+            MessageBox.Show(this, exception.Message, "Identifier list", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
     }
 
     private static ToolStripMenuItem CreateMenuItem(string text, string shortcut, EventHandler handler)
@@ -784,13 +841,16 @@ public sealed class MainForm : Form
     {
         using var dialog = new IdentifierEditorForm(_registry, _traffic.Snapshot());
         if (dialog.ShowDialog(this) == DialogResult.OK)
-        {
-            var remapped = _traffic.Snapshot().Select(frame => frame with { IdentifierName = _registry.GetName(frame.Identifier, frame.IsExtended) }).ToArray();
-            _traffic.Clear();
-            _traffic.AddRange(remapped);
-            Interlocked.Increment(ref _version);
-            RefreshGrid();
-        }
+            RemapTrafficNames();
+    }
+
+    private void RemapTrafficNames()
+    {
+        var remapped = _traffic.Snapshot().Select(frame => frame with { IdentifierName = _registry.GetName(frame.Identifier, frame.IsExtended) }).ToArray();
+        _traffic.Clear();
+        _traffic.AddRange(remapped);
+        Interlocked.Increment(ref _version);
+        RefreshGrid();
     }
 
     private void OpenIdentifierFile()
@@ -880,7 +940,7 @@ public sealed class IdentifierEditorForm : Form
     public IdentifierEditorForm(IdentifierRegistry registry, IReadOnlyList<CanFrame> observedFrames)
     {
         _registry = registry;
-        Text = "Name observed identifiers";
+        Text = $"Name observed identifiers — {registry.ActiveListName}";
         StartPosition = FormStartPosition.CenterParent;
         MinimumSize = new Size(650, 430);
         ClientSize = new Size(760, 540);
@@ -895,9 +955,9 @@ public sealed class IdentifierEditorForm : Form
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
         Controls.Add(root);
 
-        var title = new Label { Text = "Identifier names", Font = new Font("Segoe UI Semibold", 16F, FontStyle.Bold), ForeColor = TextPrimary, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft };
+        var title = new Label { Text = $"Identifier names · {registry.ActiveListName}", Font = new Font("Segoe UI Semibold", 16F, FontStyle.Bold), ForeColor = TextPrimary, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft };
         root.Controls.Add(title, 0, 0);
-        var info = new Label { Text = "Names are saved to a plain-text file and reapplied automatically on future sessions. Edit the Name column, then save.", ForeColor = TextMuted, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, AutoEllipsis = true };
+        var info = new Label { Text = "Names are saved in the shared identifier file under this list. Edit the Name column, then save.", ForeColor = TextMuted, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, AutoEllipsis = true };
         root.Controls.Add(info, 0, 1);
 
         _grid = new DataGridView
@@ -968,6 +1028,110 @@ public sealed class IdentifierEditorForm : Form
         {
             MessageBox.Show(this, exception.Message, "Could not save names", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
+    }
+
+    private static Button CreateButton(string text, Color foreground, Color background, int width)
+        => new() { Text = text, Width = width, Height = 30, FlatStyle = FlatStyle.Flat, FlatAppearance = { BorderColor = Border }, BackColor = background, ForeColor = foreground, Font = new Font("Segoe UI Semibold", 8.5F), Margin = new Padding(8, 0, 0, 0) };
+}
+
+public sealed class IdentifierListNameForm : Form
+{
+    private static readonly Color Canvas = Color.FromArgb(14, 20, 29);
+    private static readonly Color Surface = Color.FromArgb(23, 31, 43);
+    private static readonly Color Raised = Color.FromArgb(29, 39, 53);
+    private static readonly Color Border = Color.FromArgb(48, 61, 80);
+    private static readonly Color TextPrimary = Color.FromArgb(235, 241, 248);
+    private static readonly Color TextMuted = Color.FromArgb(143, 158, 177);
+    private static readonly Color Teal = Color.FromArgb(46, 205, 177);
+    private readonly TextBox _nameBox;
+
+    public IdentifierListNameForm()
+    {
+        Text = "Create identifier list";
+        StartPosition = FormStartPosition.CenterParent;
+        FormBorderStyle = FormBorderStyle.FixedDialog;
+        MinimizeBox = false;
+        MaximizeBox = false;
+        ShowInTaskbar = false;
+        ClientSize = new Size(430, 170);
+        BackColor = Canvas;
+        ForeColor = TextPrimary;
+        Font = new Font("Segoe UI", 9F);
+
+        var root = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 1,
+            RowCount = 3,
+            Padding = new Padding(18),
+            BackColor = Canvas
+        };
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
+        root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        Controls.Add(root);
+
+        var label = new Label
+        {
+            Text = "List name",
+            Dock = DockStyle.Fill,
+            ForeColor = TextPrimary,
+            TextAlign = ContentAlignment.MiddleLeft
+        };
+        root.Controls.Add(label, 0, 0);
+
+        _nameBox = new TextBox
+        {
+            Dock = DockStyle.Fill,
+            BackColor = Surface,
+            ForeColor = TextPrimary,
+            BorderStyle = BorderStyle.FixedSingle,
+            PlaceholderText = "e.g. drivetrain, test vehicle 2"
+        };
+        _nameBox.KeyDown += (_, e) =>
+        {
+            if (e.KeyCode == Keys.Enter)
+            {
+                e.SuppressKeyPress = true;
+                AcceptName();
+            }
+        };
+        root.Controls.Add(_nameBox, 0, 1);
+
+        var buttons = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            FlowDirection = FlowDirection.RightToLeft,
+            WrapContents = false,
+            BackColor = Canvas,
+            Padding = new Padding(0, 8, 0, 0)
+        };
+        var create = CreateButton("Create", Teal, Raised, 90);
+        create.Click += (_, _) => AcceptName();
+        var cancel = CreateButton("Cancel", TextMuted, Raised, 90);
+        cancel.Click += (_, _) => { DialogResult = DialogResult.Cancel; Close(); };
+        buttons.Controls.Add(create);
+        buttons.Controls.Add(cancel);
+        root.Controls.Add(buttons, 0, 2);
+
+        AcceptButton = create;
+        CancelButton = cancel;
+        Shown += (_, _) => _nameBox.Focus();
+    }
+
+    public string ListName => _nameBox.Text.Trim();
+
+    private void AcceptName()
+    {
+        if (ListName.Length == 0)
+        {
+            MessageBox.Show(this, "Enter a name for the identifier list.", "Create identifier list", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            _nameBox.Focus();
+            return;
+        }
+
+        DialogResult = DialogResult.OK;
+        Close();
     }
 
     private static Button CreateButton(string text, Color foreground, Color background, int width)
