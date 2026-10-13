@@ -17,7 +17,8 @@ public sealed class MainForm : Form
     private static readonly Color Red = Color.FromArgb(246, 103, 103);
     private const float DetailBodyFontSize = 8.5F;
 
-    private readonly TrafficBuffer _traffic = new();
+    private readonly AppSettings _settings = AppSettings.Load();
+    private readonly TrafficBuffer _traffic;
     private readonly IdentifierRegistry _registry = new();
     private readonly PcanMonitorService _monitor = new();
     private readonly List<CanFrame> _visibleFrames = [];
@@ -26,11 +27,11 @@ public sealed class MainForm : Form
 
     private DataGridView _grid = null!;
     private TextBox _searchBox = null!;
-    private ComboBox _frameTypeFilter = null!;
     private Label _statusLabel = null!;
     private Label _statusDot = null!;
     private Label _hardwareLabel = null!;
     private Label _captureLabel = null!;
+    private Label _footerInfoLabel = null!;
     private Label _selectedHint = null!;
     private Label _rtdStatusLabel = null!;
     private Label _detailBusInfo = null!;
@@ -40,12 +41,14 @@ public sealed class MainForm : Form
     private Label _detailTime = null!;
     private Label _detailSender = null!;
     private Label _detailLength = null!;
-    private Label _detailMessage = null!;
     private TableLayoutPanel _detailFieldsTable = null!;
+    private TableLayoutPanel _detailRangesTable = null!;
     private Panel _detailEmpty = null!;
     private Panel _detailContent = null!;
     private Button _startButton = null!;
     private Button _stopButton = null!;
+    private Button _clearButton = null!;
+    private Button _exportButton = null!;
     private ToolStripMenuItem _identifierListsMenu = null!;
     private SplitContainer _mainSplit = null!;
     private long _version;
@@ -54,10 +57,12 @@ public sealed class MainForm : Form
     private RtdState _lastRtdState = RtdState.Unknown;
     private bool _syncingIdentifierSelection;
     private int _primarySelectedRowIndex = -1;
+    private bool _deviceReady;
     private bool _closing;
 
     public MainForm()
     {
+        _traffic = new TrafficBuffer(_settings.MaxRetainedMessages);
         Text = "PCAN CAN Monitor";
         StartPosition = FormStartPosition.CenterScreen;
         MinimumSize = new Size(1120, 690);
@@ -118,9 +123,15 @@ public sealed class MainForm : Form
         view.DropDownItems.Add(CreateMenuItem("Clear retained traffic", string.Empty, (_, _) => ClearTraffic()));
         view.DropDownItems.Add(CreateMenuItem("Reset filters", string.Empty, (_, _) => ResetFilters()));
 
+        var settings = new ToolStripMenuItem("Settings") { ForeColor = Color.White };
+        settings.DropDown.ForeColor = Color.White;
+        settings.DropDown.Renderer = new DarkMenuRenderer();
+        settings.DropDownItems.Add(CreateMenuItem("Retained messages…", string.Empty, (_, _) => OpenSettings()));
+
         menu.Items.Add(file);
         menu.Items.Add(identifiers);
         menu.Items.Add(view);
+        menu.Items.Add(settings);
         Controls.Add(menu);
         MainMenuStrip = menu;
         RefreshIdentifierListMenu();
@@ -255,7 +266,7 @@ public sealed class MainForm : Form
         panel.Controls.Add(subtitle);
 
         var right = new Panel { Dock = DockStyle.Right, Width = 620 };
-        _captureLabel = MakeLabel("0 / 5000 retained", TextMuted, 9.5F, ContentAlignment.MiddleRight);
+        _captureLabel = MakeLabel($"0 / {_settings.MaxRetainedMessages:N0} retained", TextMuted, 9.5F, ContentAlignment.MiddleRight);
         _captureLabel.Dock = DockStyle.Right;
         _captureLabel.Width = 130;
         right.Controls.Add(_captureLabel);
@@ -288,22 +299,25 @@ public sealed class MainForm : Form
     {
         var panel = new Panel { Dock = DockStyle.Fill, BackColor = Surface, Padding = new Padding(10, 7, 10, 7) };
         _startButton = MakeButton("Start capture", Teal, SurfaceRaised, 120);
+        _startButton.Enabled = false;
         _startButton.Click += async (_, _) => await StartCapture();
         _stopButton = MakeButton("Stop", TextMuted, SurfaceRaised, 76);
         _stopButton.Enabled = false;
         _stopButton.Click += async (_, _) => await StopCapture();
-        var clear = MakeButton("Clear", TextMuted, SurfaceRaised, 72);
-        clear.Click += (_, _) => ClearTraffic();
-        var export = MakeButton("Export", TextPrimary, SurfaceRaised, 82);
-        export.Click += (_, _) => ExportCapture();
+        _clearButton = MakeButton("Clear", TextMuted, SurfaceRaised, 72);
+        _clearButton.Enabled = false;
+        _clearButton.Click += (_, _) => ClearTraffic();
+        _exportButton = MakeButton("Export", TextPrimary, SurfaceRaised, 82);
+        _exportButton.Enabled = false;
+        _exportButton.Click += (_, _) => ExportCapture();
         var import = MakeButton("Import", TextPrimary, SurfaceRaised, 82);
         import.Click += (_, _) => ImportCapture();
 
-        var buttons = new FlowLayoutPanel { Dock = DockStyle.Left, Width = 455, WrapContents = false, BackColor = Color.Transparent };
-        buttons.Controls.AddRange([_startButton, _stopButton, clear, export, import]);
+        var buttons = new FlowLayoutPanel { Dock = DockStyle.Left, Width = 480, WrapContents = false, BackColor = Color.Transparent };
+        buttons.Controls.AddRange([_startButton, _stopButton, _clearButton, _exportButton, import]);
         panel.Controls.Add(buttons);
 
-        var filters = new FlowLayoutPanel { Dock = DockStyle.Right, Width = 440, WrapContents = false, FlowDirection = FlowDirection.LeftToRight, BackColor = Color.Transparent };
+        var filters = new FlowLayoutPanel { Dock = DockStyle.Right, Width = 270, WrapContents = false, FlowDirection = FlowDirection.LeftToRight, BackColor = Color.Transparent };
         var searchLabel = MakeLabel("FILTER", TextMuted, 8F, ContentAlignment.MiddleCenter);
         searchLabel.Width = 48;
         filters.Controls.Add(searchLabel);
@@ -319,20 +333,6 @@ public sealed class MainForm : Form
         };
         _searchBox.TextChanged += (_, _) => RefreshGrid();
         filters.Controls.Add(_searchBox);
-        _frameTypeFilter = new ComboBox
-        {
-            Width = 145,
-            Height = 28,
-            DropDownStyle = ComboBoxStyle.DropDownList,
-            BackColor = SurfaceRaised,
-            ForeColor = TextPrimary,
-            FlatStyle = FlatStyle.Flat,
-            Margin = new Padding(0, 2, 0, 2)
-        };
-        _frameTypeFilter.Items.AddRange(["All frame types", "Standard", "Extended", "Remote"]);
-        _frameTypeFilter.SelectedIndex = 0;
-        _frameTypeFilter.SelectedIndexChanged += (_, _) => RefreshGrid();
-        filters.Controls.Add(_frameTypeFilter);
         panel.Controls.Add(filters);
         return panel;
     }
@@ -485,7 +485,7 @@ public sealed class MainForm : Form
         };
         table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 32));
         table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 68));
-        for (var i = 0; i < 6; i++)
+        for (var i = 0; i < 5; i++)
             table.RowStyles.Add(new RowStyle(SizeType.Absolute, 23));
         table.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
@@ -493,14 +493,12 @@ public sealed class MainForm : Form
         _detailType = MakeLabel("—", Teal, DetailBodyFontSize, ContentAlignment.MiddleLeft);
         _detailSender = MakeLabel("—", TextPrimary, DetailBodyFontSize, ContentAlignment.MiddleLeft);
         _detailLength = MakeLabel("—", TextPrimary, DetailBodyFontSize, ContentAlignment.MiddleLeft);
-        _detailMessage = MakeLabel("—", TextPrimary, DetailBodyFontSize, ContentAlignment.MiddleLeft);
         _detailTime = MakeLabel("—", TextMuted, DetailBodyFontSize, ContentAlignment.MiddleLeft);
         AddInspectorRow(table, 0, "Identifier", _detailId);
         AddInspectorRow(table, 1, "Frame", _detailType);
         AddInspectorRow(table, 2, "Sender", _detailSender);
         AddInspectorRow(table, 3, "Length", _detailLength);
-        AddInspectorRow(table, 4, "Message", _detailMessage);
-        AddInspectorRow(table, 5, "Time", _detailTime);
+        AddInspectorRow(table, 4, "Time", _detailTime);
 
         _detailFieldsTable = new TableLayoutPanel
         {
@@ -515,9 +513,26 @@ public sealed class MainForm : Form
         };
         _detailFieldsTable.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 60));
         _detailFieldsTable.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 40));
-        table.Controls.Add(_detailFieldsTable, 0, 6);
+        table.Controls.Add(_detailFieldsTable, 0, 5);
         table.SetColumnSpan(_detailFieldsTable, 2);
         RenderDecodedFields([]);
+
+        _detailRangesTable = new TableLayoutPanel
+        {
+            Dock = DockStyle.Top,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            ColumnCount = 2,
+            RowCount = 1,
+            BackColor = SurfaceRaised,
+            Margin = new Padding(0, 7, 0, 0),
+            Padding = new Padding(0)
+        };
+        _detailRangesTable.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 60));
+        _detailRangesTable.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 40));
+        table.Controls.Add(_detailRangesTable, 0, 6);
+        table.SetColumnSpan(_detailRangesTable, 2);
+        RenderDecodedRanges([]);
         card.Controls.Add(table);
         return card;
     }
@@ -569,6 +584,45 @@ public sealed class MainForm : Form
         _detailFieldsTable.ResumeLayout(true);
     }
 
+    private void RenderDecodedRanges(IReadOnlyList<CanDecodedRange> ranges)
+    {
+        _detailRangesTable.SuspendLayout();
+        _detailRangesTable.Controls.Clear();
+        _detailRangesTable.RowStyles.Clear();
+        _detailRangesTable.RowCount = Math.Max(2, ranges.Count + 1);
+        _detailRangesTable.RowStyles.Add(new RowStyle(SizeType.Absolute, 24));
+
+        var header = MakeLabel("Observed range", TextMuted, DetailBodyFontSize, ContentAlignment.MiddleLeft);
+        header.Dock = DockStyle.Fill;
+        _detailRangesTable.Controls.Add(header, 0, 0);
+        _detailRangesTable.SetColumnSpan(header, 2);
+
+        if (ranges.Count == 0)
+        {
+            _detailRangesTable.RowStyles.Add(new RowStyle(SizeType.Absolute, 22));
+            var empty = MakeLabel("No range data available", TextMuted, DetailBodyFontSize, ContentAlignment.MiddleLeft);
+            empty.Dock = DockStyle.Fill;
+            _detailRangesTable.Controls.Add(empty, 0, 1);
+            _detailRangesTable.SetColumnSpan(empty, 2);
+        }
+        else
+        {
+            for (var i = 0; i < ranges.Count; i++)
+            {
+                _detailRangesTable.RowStyles.Add(new RowStyle(SizeType.Absolute, 22));
+                var range = ranges[i];
+                var name = MakeLabel(range.Name, TextPrimary, DetailBodyFontSize, ContentAlignment.MiddleLeft);
+                var value = MakeLabel($"{range.Minimum} - {range.Maximum}", Teal, DetailBodyFontSize, ContentAlignment.MiddleLeft);
+                name.Dock = DockStyle.Fill;
+                value.Dock = DockStyle.Fill;
+                _detailRangesTable.Controls.Add(name, 0, i + 1);
+                _detailRangesTable.Controls.Add(value, 1, i + 1);
+            }
+        }
+
+        _detailRangesTable.ResumeLayout(true);
+    }
+
     private Control BuildFooter()
     {
         var footer = new Panel { Dock = DockStyle.Fill, BackColor = Canvas };
@@ -576,9 +630,9 @@ public sealed class MainForm : Form
         _selectedHint.Dock = DockStyle.Left;
         _selectedHint.Width = 250;
         footer.Controls.Add(_selectedHint);
-        var right = MakeLabel("Receive-only observer · buffer limit 5,000 frames", TextMuted, 8.5F, ContentAlignment.MiddleRight);
-        right.Dock = DockStyle.Fill;
-        footer.Controls.Add(right);
+        _footerInfoLabel = MakeLabel($"Receive-only observer · buffer limit {_settings.MaxRetainedMessages:N0} frames", TextMuted, 8.5F, ContentAlignment.MiddleRight);
+        _footerInfoLabel.Dock = DockStyle.Fill;
+        footer.Controls.Add(_footerInfoLabel);
         return footer;
     }
 
@@ -663,12 +717,14 @@ public sealed class MainForm : Form
             _ => "SCANNING"
         };
         _hardwareLabel.Text = status.Channel?.DisplayName ?? status.Message;
-        _startButton.Enabled = !_monitor.IsRunning;
-        _stopButton.Enabled = _monitor.IsRunning;
+        _deviceReady = status.Mode == MonitorMode.Live && status.Channel?.IsConnected == true;
+        UpdateToolbarState();
     }
 
     private async Task StartCapture()
     {
+        if (!_deviceReady)
+            return;
         _startButton.Enabled = false;
         _statusLabel.Text = "SCANNING";
         await _monitor.StartAsync();
@@ -680,15 +736,14 @@ public sealed class MainForm : Form
         _statusLabel.Text = "PAUSED";
         _statusLabel.ForeColor = TextMuted;
         _statusDot.ForeColor = TextMuted;
-        _startButton.Enabled = true;
-        _stopButton.Enabled = false;
+        UpdateToolbarState();
     }
 
     private void RefreshGridIfNeeded()
     {
         if (_renderedVersion == _version && _grid.RowCount == _visibleFrames.Count)
         {
-            _captureLabel.Text = $"{_traffic.Count:N0} / 5000 retained";
+            UpdateRetainedMessageLabels();
             return;
         }
         RefreshGrid();
@@ -699,18 +754,31 @@ public sealed class MainForm : Form
         if (IsDisposed)
             return;
         var query = _searchBox?.Text.Trim() ?? string.Empty;
-        var type = _frameTypeFilter?.SelectedItem?.ToString() ?? "All frame types";
         var snapshot = _traffic.Snapshot();
         var matches = snapshot.AsEnumerable().Reverse().Where(frame =>
-            (type == "All frame types" || frame.FrameType.Equals(type, StringComparison.OrdinalIgnoreCase)) &&
             (query.Length == 0 || FrameMatches(frame, query)));
 
         _visibleFrames.Clear();
         _visibleFrames.AddRange(matches);
         _grid.RowCount = _visibleFrames.Count;
         _grid.Invalidate();
-        _captureLabel.Text = $"{_traffic.Count:N0} / 5000 retained";
+        UpdateRetainedMessageLabels();
         _renderedVersion = _version;
+    }
+
+    private void UpdateRetainedMessageLabels()
+    {
+        _captureLabel.Text = $"{_traffic.Count:N0} / {_settings.MaxRetainedMessages:N0} retained";
+        _footerInfoLabel.Text = $"Receive-only observer · buffer limit {_settings.MaxRetainedMessages:N0} frames";
+        UpdateToolbarState();
+    }
+
+    private void UpdateToolbarState()
+    {
+        _startButton.Enabled = _deviceReady && !_monitor.IsRunning;
+        _stopButton.Enabled = _monitor.IsRunning;
+        _clearButton.Enabled = _traffic.Count > 0;
+        _exportButton.Enabled = _traffic.Count > 0;
     }
 
     private static bool FrameMatches(CanFrame frame, string query)
@@ -797,7 +865,10 @@ public sealed class MainForm : Form
             _syncingIdentifierSelection = false;
         }
 
-        var decoded = CanFrameDecoder.Decode(frame, _registry.GetMessage(frame.Identifier, frame.IsExtended));
+        var definition = _registry.GetMessage(frame.Identifier, frame.IsExtended);
+        var decoded = CanFrameDecoder.Decode(frame, definition);
+        var matchingFrames = _visibleFrames.Where(candidate =>
+            candidate.Identifier == frame.Identifier && candidate.IsExtended == frame.IsExtended);
         _detailEmpty.Visible = false;
         _detailContent.Visible = true;
         _detailHeading.Visible = true;
@@ -809,8 +880,8 @@ public sealed class MainForm : Form
         _detailTime.Text = $"{frame.Timestamp.ToLocalTime():yyyy-MM-dd HH:mm:ss.fff} local time";
         _detailSender.Text = decoded.Sender;
         _detailLength.Text = decoded.Length;
-        _detailMessage.Text = decoded.Message;
         RenderDecodedFields(decoded.Fields);
+        RenderDecodedRanges(definition is null ? [] : CanFrameDecoder.GetRanges(matchingFrames, definition));
         _detailBusInfo.Text = $"{frame.Channel}   ·   {FormatRate(frame.Bitrate)}";
     }
 
@@ -829,7 +900,6 @@ public sealed class MainForm : Form
     private void ResetFilters()
     {
         _searchBox.Clear();
-        _frameTypeFilter.SelectedIndex = 0;
     }
 
     private void ExportCapture()
@@ -904,6 +974,28 @@ public sealed class MainForm : Form
         {
             Interlocked.Increment(ref _version);
             RefreshGrid();
+        }
+    }
+
+    private void OpenSettings()
+    {
+        using var dialog = new SettingsForm(_settings.MaxRetainedMessages);
+        if (dialog.ShowDialog(this) != DialogResult.OK || dialog.MaxRetainedMessages == _settings.MaxRetainedMessages)
+            return;
+
+        try
+        {
+            _settings.SetMaxRetainedMessages(dialog.MaxRetainedMessages);
+            _settings.Save();
+            _traffic.SetCapacity(_settings.MaxRetainedMessages);
+            Interlocked.Increment(ref _version);
+            UpdateRetainedMessageLabels();
+            RefreshGrid();
+        }
+        catch (Exception exception)
+        {
+            AppLog.Error("Could not save application settings.", exception);
+            MessageBox.Show(this, exception.Message, "Settings", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
     }
 

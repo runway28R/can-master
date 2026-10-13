@@ -2,9 +2,22 @@ namespace PcanCanMonitor;
 
 public sealed class TrafficBuffer
 {
-    private const int Capacity = 5000;
     private readonly object _sync = new();
-    private readonly Queue<CanFrame> _frames = new(Capacity);
+    private readonly Queue<CanFrame> _frames;
+    private int _capacity;
+
+    public TrafficBuffer(int capacity)
+    {
+        if (capacity < 1)
+            throw new ArgumentOutOfRangeException(nameof(capacity));
+        _capacity = capacity;
+        _frames = new Queue<CanFrame>(capacity);
+    }
+
+    public int Capacity
+    {
+        get { lock (_sync) return _capacity; }
+    }
 
     public int Count
     {
@@ -15,9 +28,22 @@ public sealed class TrafficBuffer
     {
         lock (_sync)
         {
-            if (_frames.Count >= Capacity)
+            if (_frames.Count >= _capacity)
                 _frames.Dequeue();
             _frames.Enqueue(frame);
+        }
+    }
+
+    public void SetCapacity(int capacity)
+    {
+        if (capacity < 1)
+            throw new ArgumentOutOfRangeException(nameof(capacity));
+
+        lock (_sync)
+        {
+            _capacity = capacity;
+            while (_frames.Count > _capacity)
+                _frames.Dequeue();
         }
     }
 

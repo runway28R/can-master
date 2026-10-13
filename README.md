@@ -11,7 +11,8 @@ Intended use is for project developments, especially on vehicles using MoTeC Dat
 - Discovers PCAN-USB channels automatically; no channel configuration is required.
 - Probes common CAN bitrates by listening only, then remains in receive-only mode.
 - Displays frames as raw hexadecimal data.
-- Retains the most recent 5,000 frames in memory.
+- Retains the most recent configurable number of frames in memory (5,000 by default).
+- Stores application settings, including the retained-message limit, in `%LOCALAPPDATA%\PcanCanMonitor\settings.json`.
 - Names observed identifiers from the **Identifiers** menu.
 - Edits message declarations and byte-level signals from the **Identifiers** menu.
 - Keeps multiple named identifier lists in one human-editable `%LOCALAPPDATA%\PcanCanMonitor\identifiers.txt` file. The original unnamed list is migrated to **SRE-7b**.

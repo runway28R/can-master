@@ -3,6 +3,7 @@ using System.Globalization;
 namespace PcanCanMonitor;
 
 public sealed record CanDecodedField(string Name, string Value);
+public sealed record CanDecodedRange(string Name, string Minimum, string Maximum);
 
 public sealed record CanFrameDecode(
     string Sender,
@@ -72,7 +73,7 @@ public static class CanFrameDecoder
         {
             foreach (var signal in definition.Signals)
             {
-                var decoded = TryDecodeSignal(frame, signal, out var value);
+                var decoded = TryDecodeSignal(frame, signal, out _, out var value);
                 var displayValue = decoded ? value : "not present";
                 decodedFields.Add(new CanDecodedField(signal.Name, displayValue));
                 if (decoded)
@@ -91,8 +92,34 @@ public static class CanFrameDecoder
             Fields: decodedFields);
     }
 
-    private static bool TryDecodeSignal(CanFrame frame, CanSignalDefinition signal, out string value)
+    public static IReadOnlyList<CanDecodedRange> GetRanges(IEnumerable<CanFrame> frames, CanMessageDefinition definition)
     {
+        var ranges = definition.Signals
+            .Select(signal => new SignalRange(signal))
+            .ToArray();
+
+        foreach (var frame in frames)
+        {
+            for (var index = 0; index < definition.Signals.Count; index++)
+            {
+                var signal = definition.Signals[index];
+                if (TryDecodeSignal(frame, signal, out var numericValue, out _))
+                    ranges[index].Add(numericValue);
+            }
+        }
+
+        return ranges
+            .Where(range => range.HasValue)
+            .Select(range => new CanDecodedRange(
+                range.Signal.Name,
+                FormatRangeValue(range.Signal, range.Minimum),
+                FormatRangeValue(range.Signal, range.Maximum)))
+            .ToArray();
+    }
+
+    private static bool TryDecodeSignal(CanFrame frame, CanSignalDefinition signal, out double numericValue, out string value)
+    {
+        numericValue = 0;
         value = string.Empty;
         if (signal.StartByte < 0 || signal.Length is < 1 or > 8 || signal.EndByte >= frame.Data.Length)
             return false;
@@ -111,6 +138,7 @@ public static class CanFrameDecoder
 
         if (signal.ValueKind == CanSignalValueKind.Boolean)
         {
+            numericValue = raw;
             value = (raw != 0).ToString();
             return true;
         }
@@ -120,11 +148,40 @@ public static class CanFrameDecoder
             ? SignExtend(raw, bits)
             : (long)raw;
         var scaled = numeric * signal.Scale;
-        if (signal.Scale == 1 && signal.Unit.Length == 0)
-            value = numeric.ToString(CultureInfo.InvariantCulture);
-        else
-            value = $"{scaled:0.###} {signal.Unit}".TrimEnd();
+        numericValue = scaled;
+        value = FormatRangeValue(signal, scaled, numeric);
         return true;
+    }
+
+    private static string FormatRangeValue(CanSignalDefinition signal, double scaledValue, long? unscaledValue = null)
+    {
+        if (signal.ValueKind == CanSignalValueKind.Boolean)
+            return scaledValue == 0 ? "False" : "True";
+        if (signal.Scale == 1 && signal.Unit.Length == 0 && unscaledValue.HasValue)
+            return unscaledValue.Value.ToString(CultureInfo.InvariantCulture);
+        return $"{scaledValue:0.###} {signal.Unit}".TrimEnd();
+    }
+
+    private sealed class SignalRange(CanSignalDefinition signal)
+    {
+        public CanSignalDefinition Signal { get; } = signal;
+        public bool HasValue { get; private set; }
+        public double Minimum { get; private set; }
+        public double Maximum { get; private set; }
+
+        public void Add(double value)
+        {
+            if (!HasValue)
+            {
+                Minimum = value;
+                Maximum = value;
+                HasValue = true;
+                return;
+            }
+
+            Minimum = Math.Min(Minimum, value);
+            Maximum = Math.Max(Maximum, value);
+        }
     }
 
     private static long SignExtend(ulong value, int bits)
