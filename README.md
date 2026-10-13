@@ -13,7 +13,9 @@ Intended use is for project developments, especially on vehicles using MoTeC Dat
 - Displays frames as raw hexadecimal data.
 - Retains the most recent 5,000 frames in memory.
 - Names observed identifiers from the **Identifiers** menu.
+- Edits message declarations and byte-level signals from the **Identifiers** menu.
 - Keeps multiple named identifier lists in one human-editable `%LOCALAPPDATA%\PcanCanMonitor\identifiers.txt` file. The original unnamed list is migrated to **SRE-7b**.
+- The same file stores car-specific message and signal decoding rows; SRE-7b mappings are bootstrapped from `canManager.c` and can be edited per list.
 - Exports and imports tab-separated `.pcanlog` files for offline analysis.
 - Writes startup, PCAN discovery, capture, and crash diagnostics to `%LOCALAPPDATA%\PcanCanMonitor\pcan-monitor.log`.
 

@@ -21,6 +21,7 @@ public sealed class MainForm : Form
     private readonly IdentifierRegistry _registry = new();
     private readonly PcanMonitorService _monitor = new();
     private readonly List<CanFrame> _visibleFrames = [];
+    private readonly Font _primarySelectedRowFont = new("Segoe UI", 9F, FontStyle.Bold);
     private readonly System.Windows.Forms.Timer _refreshTimer;
 
     private DataGridView _grid = null!;
@@ -40,8 +41,7 @@ public sealed class MainForm : Form
     private Label _detailSender = null!;
     private Label _detailLength = null!;
     private Label _detailMessage = null!;
-    private readonly Label[] _detailByteValues = new Label[8];
-    private readonly Label[] _detailByteMeanings = new Label[8];
+    private TableLayoutPanel _detailFieldsTable = null!;
     private Panel _detailEmpty = null!;
     private Panel _detailContent = null!;
     private Button _startButton = null!;
@@ -53,6 +53,7 @@ public sealed class MainForm : Form
     private bool _hasRtdState;
     private RtdState _lastRtdState = RtdState.Unknown;
     private bool _syncingIdentifierSelection;
+    private int _primarySelectedRowIndex = -1;
     private bool _closing;
 
     public MainForm()
@@ -107,7 +108,8 @@ public sealed class MainForm : Form
         _identifierListsMenu.DropDown.Renderer = new DarkMenuRenderer();
         identifiers.DropDownItems.Add(_identifierListsMenu);
         identifiers.DropDownItems.Add(new ToolStripSeparator());
-        identifiers.DropDownItems.Add(CreateMenuItem("Name observed identifiers…", "Ctrl+I", (_, _) => OpenIdentifierEditor()));
+        identifiers.DropDownItems.Add(CreateMenuItem("Name observed identifiers…", string.Empty, (_, _) => OpenIdentifierEditor()));
+        identifiers.DropDownItems.Add(CreateMenuItem("Edit message declarations…", string.Empty, (_, _) => OpenMessageEditor()));
         identifiers.DropDownItems.Add(CreateMenuItem("Open identifier file", string.Empty, (_, _) => OpenIdentifierFile()));
 
         var view = new ToolStripMenuItem("View") { ForeColor = Color.White };
@@ -461,23 +463,31 @@ public sealed class MainForm : Form
 
     private Control BuildDetailIdentityCard()
     {
-        var card = new Panel { Width = 330, Height = 378, BackColor = SurfaceRaised, Padding = new Padding(14, 10, 14, 10), Margin = new Padding(0, 0, 0, 12) };
+        var card = new Panel
+        {
+            Width = 330,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            MinimumSize = new Size(330, 0),
+            BackColor = SurfaceRaised,
+            Padding = new Padding(14, 10, 14, 10),
+            Margin = new Padding(0, 0, 0, 12)
+        };
         var table = new TableLayoutPanel
         {
-            Dock = DockStyle.Fill,
-            ColumnCount = 3,
-            RowCount = 15,
+            Dock = DockStyle.Top,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            ColumnCount = 2,
+            RowCount = 7,
             BackColor = SurfaceRaised,
             Padding = new Padding(0)
         };
-        table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 35));
-        table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 23));
-        table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 42));
+        table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 32));
+        table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 68));
         for (var i = 0; i < 6; i++)
             table.RowStyles.Add(new RowStyle(SizeType.Absolute, 23));
-        table.RowStyles.Add(new RowStyle(SizeType.Absolute, 24));
-        for (var i = 0; i < 8; i++)
-            table.RowStyles.Add(new RowStyle(SizeType.Absolute, 22));
+        table.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
         _detailId = MakeLabel("—", TextPrimary, DetailBodyFontSize, ContentAlignment.MiddleLeft);
         _detailType = MakeLabel("—", Teal, DetailBodyFontSize, ContentAlignment.MiddleLeft);
@@ -491,23 +501,23 @@ public sealed class MainForm : Form
         AddInspectorRow(table, 3, "Length", _detailLength);
         AddInspectorRow(table, 4, "Message", _detailMessage);
         AddInspectorRow(table, 5, "Time", _detailTime);
-        table.SetColumnSpan(_detailId, 2);
-        table.SetColumnSpan(_detailType, 2);
-        table.SetColumnSpan(_detailSender, 2);
-        table.SetColumnSpan(_detailLength, 2);
-        table.SetColumnSpan(_detailMessage, 2);
-        table.SetColumnSpan(_detailTime, 2);
 
-        AddInspectorHeader(table, 6, "Byte", "Value", "Meaning");
-        for (var i = 0; i < 8; i++)
+        _detailFieldsTable = new TableLayoutPanel
         {
-            var index = MakeLabel($"Byte {i}", TextMuted, DetailBodyFontSize, ContentAlignment.MiddleLeft);
-            _detailByteValues[i] = MakeLabel("—", TextPrimary, DetailBodyFontSize, ContentAlignment.MiddleLeft);
-            _detailByteMeanings[i] = MakeLabel("—", TextMuted, DetailBodyFontSize, ContentAlignment.MiddleLeft);
-            table.Controls.Add(index, 0, i + 7);
-            table.Controls.Add(_detailByteValues[i], 1, i + 7);
-            table.Controls.Add(_detailByteMeanings[i], 2, i + 7);
-        }
+            Dock = DockStyle.Top,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            ColumnCount = 2,
+            RowCount = 1,
+            BackColor = SurfaceRaised,
+            Margin = new Padding(0, 7, 0, 0),
+            Padding = new Padding(0)
+        };
+        _detailFieldsTable.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 60));
+        _detailFieldsTable.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 40));
+        table.Controls.Add(_detailFieldsTable, 0, 6);
+        table.SetColumnSpan(_detailFieldsTable, 2);
+        RenderDecodedFields([]);
         card.Controls.Add(table);
         return card;
     }
@@ -520,11 +530,43 @@ public sealed class MainForm : Form
         table.Controls.Add(value, 1, row);
     }
 
-    private static void AddInspectorHeader(TableLayoutPanel table, int row, string first, string second, string third)
+    private void RenderDecodedFields(IReadOnlyList<CanDecodedField> fields)
     {
-        table.Controls.Add(MakeLabel(first, TextMuted, DetailBodyFontSize, ContentAlignment.MiddleLeft), 0, row);
-        table.Controls.Add(MakeLabel(second, TextMuted, DetailBodyFontSize, ContentAlignment.MiddleLeft), 1, row);
-        table.Controls.Add(MakeLabel(third, TextMuted, DetailBodyFontSize, ContentAlignment.MiddleLeft), 2, row);
+        _detailFieldsTable.SuspendLayout();
+        _detailFieldsTable.Controls.Clear();
+        _detailFieldsTable.RowStyles.Clear();
+        _detailFieldsTable.RowCount = Math.Max(2, fields.Count + 1);
+        _detailFieldsTable.RowStyles.Add(new RowStyle(SizeType.Absolute, 24));
+
+        var header = MakeLabel("Decoded fields", TextMuted, DetailBodyFontSize, ContentAlignment.MiddleLeft);
+        header.Dock = DockStyle.Fill;
+        _detailFieldsTable.Controls.Add(header, 0, 0);
+        _detailFieldsTable.SetColumnSpan(header, 2);
+
+        if (fields.Count == 0)
+        {
+            _detailFieldsTable.RowStyles.Add(new RowStyle(SizeType.Absolute, 22));
+            var empty = MakeLabel("No decoded fields declared", TextMuted, DetailBodyFontSize, ContentAlignment.MiddleLeft);
+            empty.Dock = DockStyle.Fill;
+            _detailFieldsTable.Controls.Add(empty, 0, 1);
+            _detailFieldsTable.SetColumnSpan(empty, 2);
+        }
+        else
+        {
+            for (var i = 0; i < fields.Count; i++)
+            {
+                _detailFieldsTable.RowStyles.Add(new RowStyle(SizeType.Absolute, 22));
+                var field = fields[i];
+                var name = MakeLabel(field.Name, TextPrimary, DetailBodyFontSize, ContentAlignment.MiddleLeft);
+                var value = MakeLabel(field.Value, Teal, DetailBodyFontSize, ContentAlignment.MiddleLeft);
+                name.Dock = DockStyle.Fill;
+                value.Dock = DockStyle.Fill;
+                _detailFieldsTable.Controls.Add(name, 0, i + 1);
+                _detailFieldsTable.Controls.Add(value, 1, i + 1);
+            }
+        }
+
+        _detailFieldsTable.ResumeLayout(true);
     }
 
     private Control BuildFooter()
@@ -690,7 +732,7 @@ public sealed class MainForm : Form
             "time" => frame.TimeText,
             "id" => $"0x{frame.IdText}",
             "name" => frame.IdentifierName ?? "—",
-            "message" => CanFrameDecoder.GetKnownMessage(frame) ?? string.Empty,
+            "message" => CanFrameDecoder.GetTableMessage(frame, _registry.GetMessage(frame.Identifier, frame.IsExtended)) ?? string.Empty,
             "data" => frame.DataText,
             _ => string.Empty
         };
@@ -701,6 +743,9 @@ public sealed class MainForm : Form
         if (e.RowIndex < 0 || e.RowIndex >= _visibleFrames.Count)
             return;
         var frame = _visibleFrames[e.RowIndex];
+        e.CellStyle!.Font = e.RowIndex == _primarySelectedRowIndex
+            ? _primarySelectedRowFont
+            : _grid.DefaultCellStyle.Font;
         if (_grid.Columns[e.ColumnIndex].Name == "id")
             e.CellStyle!.ForeColor = frame.IsExtended ? Amber : Teal;
         else if (_grid.Columns[e.ColumnIndex].Name == "name" && frame.IdentifierName is not null)
@@ -713,6 +758,7 @@ public sealed class MainForm : Form
     {
         if (_grid.CurrentCell is null || _grid.CurrentCell.RowIndex < 0 || _grid.CurrentCell.RowIndex >= _visibleFrames.Count)
         {
+            _primarySelectedRowIndex = -1;
             _detailEmpty.Visible = false;
             _detailContent.Visible = false;
             _detailHeading.Visible = false;
@@ -722,25 +768,36 @@ public sealed class MainForm : Form
             return;
         }
 
-        var frame = _visibleFrames[_grid.CurrentCell.RowIndex];
-        if (!_syncingIdentifierSelection)
+        var selectedRowIndex = _grid.CurrentCell.RowIndex;
+        var previousSelectedRowIndex = _primarySelectedRowIndex;
+        _primarySelectedRowIndex = selectedRowIndex;
+        if (previousSelectedRowIndex >= 0 && previousSelectedRowIndex < _grid.RowCount)
+            _grid.InvalidateRow(previousSelectedRowIndex);
+        _grid.InvalidateRow(selectedRowIndex);
+
+        var frame = _visibleFrames[selectedRowIndex];
+        if (_syncingIdentifierSelection)
+            return;
+
+        _syncingIdentifierSelection = true;
+        try
         {
-            _syncingIdentifierSelection = true;
-            try
+            _grid.SuspendLayout();
+            for (var rowIndex = 0; rowIndex < _visibleFrames.Count; rowIndex++)
             {
-                for (var rowIndex = 0; rowIndex < _visibleFrames.Count; rowIndex++)
-                {
-                    var candidate = _visibleFrames[rowIndex];
-                    _grid.Rows[rowIndex].Selected = candidate.Identifier == frame.Identifier && candidate.IsExtended == frame.IsExtended;
-                }
-            }
-            finally
-            {
-                _syncingIdentifierSelection = false;
+                var candidate = _visibleFrames[rowIndex];
+                var shouldBeSelected = candidate.Identifier == frame.Identifier && candidate.IsExtended == frame.IsExtended;
+                if (_grid.Rows[rowIndex].Selected != shouldBeSelected)
+                    _grid.Rows[rowIndex].Selected = shouldBeSelected;
             }
         }
+        finally
+        {
+            _grid.ResumeLayout(true);
+            _syncingIdentifierSelection = false;
+        }
 
-        var decoded = CanFrameDecoder.Decode(frame);
+        var decoded = CanFrameDecoder.Decode(frame, _registry.GetMessage(frame.Identifier, frame.IsExtended));
         _detailEmpty.Visible = false;
         _detailContent.Visible = true;
         _detailHeading.Visible = true;
@@ -753,11 +810,7 @@ public sealed class MainForm : Form
         _detailSender.Text = decoded.Sender;
         _detailLength.Text = decoded.Length;
         _detailMessage.Text = decoded.Message;
-        foreach (var byteDecode in decoded.Bytes)
-        {
-            _detailByteValues[byteDecode.Index].Text = byteDecode.Value.HasValue ? $"0x{byteDecode.Value.Value:X2}" : "—";
-            _detailByteMeanings[byteDecode.Index].Text = byteDecode.Meaning;
-        }
+        RenderDecodedFields(decoded.Fields);
         _detailBusInfo.Text = $"{frame.Channel}   ·   {FormatRate(frame.Bitrate)}";
     }
 
@@ -818,7 +871,7 @@ public sealed class MainForm : Form
         {
             AppLog.Info($"Importing capture from {dialog.FileName}.");
             var frames = CaptureFileService.Import(dialog.FileName)
-                .Select(frame => frame with { IdentifierName = _registry.GetName(frame.Identifier, frame.IsExtended) ?? frame.IdentifierName })
+                .Select(frame => frame with { IdentifierName = _registry.GetName(frame.Identifier, frame.IsExtended) })
                 .ToArray();
             _traffic.Clear();
             _traffic.AddRange(frames);
@@ -842,6 +895,16 @@ public sealed class MainForm : Form
         using var dialog = new IdentifierEditorForm(_registry, _traffic.Snapshot());
         if (dialog.ShowDialog(this) == DialogResult.OK)
             RemapTrafficNames();
+    }
+
+    private void OpenMessageEditor()
+    {
+        using var dialog = new MessageEditorForm(_registry);
+        if (dialog.ShowDialog(this) == DialogResult.OK)
+        {
+            Interlocked.Increment(ref _version);
+            RefreshGrid();
+        }
     }
 
     private void RemapTrafficNames()
@@ -987,7 +1050,7 @@ public sealed class IdentifierEditorForm : Form
         {
             var key = IdentifierRegistry.MakeKey(frame.Identifier, frame.IsExtended);
             if (!definitions.ContainsKey(key))
-                definitions[key] = new IdentifierDefinition(frame.Identifier, frame.IsExtended, string.Empty);
+                definitions[key] = new IdentifierDefinition(frame.Identifier, frame.IsExtended, registry.GetName(frame.Identifier, frame.IsExtended) ?? string.Empty);
         }
         foreach (var definition in definitions.Values.OrderBy(item => item.IsExtended).ThenBy(item => item.Identifier))
             _grid.Rows.Add(definition.IsExtended ? "Extended" : "Standard", definition.IdText, definition.Name);
@@ -1032,6 +1095,382 @@ public sealed class IdentifierEditorForm : Form
 
     private static Button CreateButton(string text, Color foreground, Color background, int width)
         => new() { Text = text, Width = width, Height = 30, FlatStyle = FlatStyle.Flat, FlatAppearance = { BorderColor = Border }, BackColor = background, ForeColor = foreground, Font = new Font("Segoe UI Semibold", 8.5F), Margin = new Padding(8, 0, 0, 0) };
+}
+
+public sealed class MessageEditorForm : Form
+{
+    private static readonly Color Canvas = Color.FromArgb(14, 20, 29);
+    private static readonly Color Surface = Color.FromArgb(23, 31, 43);
+    private static readonly Color Raised = Color.FromArgb(29, 39, 53);
+    private static readonly Color Border = Color.FromArgb(48, 61, 80);
+    private static readonly Color TextPrimary = Color.FromArgb(235, 241, 248);
+    private static readonly Color TextMuted = Color.FromArgb(143, 158, 177);
+    private static readonly Color Teal = Color.FromArgb(46, 205, 177);
+    private readonly IdentifierRegistry _registry;
+    private readonly List<MessageDraft> _drafts;
+    private readonly DataGridView _messageGrid;
+    private readonly DataGridView _signalGrid;
+    private int _selectedMessageIndex = -1;
+    private bool _loading;
+
+    public MessageEditorForm(IdentifierRegistry registry)
+    {
+        _registry = registry;
+        _drafts = registry.GetMessages().Select(message => new MessageDraft(message)).ToList();
+        Text = $"Edit message declarations — {registry.ActiveListName}";
+        StartPosition = FormStartPosition.CenterParent;
+        MinimumSize = new Size(900, 620);
+        ClientSize = new Size(1080, 720);
+        BackColor = Canvas;
+        ForeColor = TextPrimary;
+        Font = new Font("Segoe UI", 9F);
+
+        var root = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            RowCount = 5,
+            ColumnCount = 1,
+            Padding = new Padding(18),
+            BackColor = Canvas
+        };
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 50));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
+        root.RowStyles.Add(new RowStyle(SizeType.Percent, 42));
+        root.RowStyles.Add(new RowStyle(SizeType.Percent, 58));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
+        Controls.Add(root);
+
+        var title = new Label
+        {
+            Text = $"Message declarations · {registry.ActiveListName}",
+            Font = new Font("Segoe UI Semibold", 16F, FontStyle.Bold),
+            ForeColor = TextPrimary,
+            Dock = DockStyle.Fill,
+            TextAlign = ContentAlignment.MiddleLeft
+        };
+        root.Controls.Add(title, 0, 0);
+
+        var info = new Label
+        {
+            Text = "Define each CAN message and its byte signals. Values are saved in the active identifier list.",
+            ForeColor = TextMuted,
+            Dock = DockStyle.Fill,
+            TextAlign = ContentAlignment.MiddleLeft,
+            AutoEllipsis = true
+        };
+        root.Controls.Add(info, 0, 1);
+
+        _messageGrid = CreateGrid();
+        var messageType = new DataGridViewComboBoxColumn { Name = "type", HeaderText = "Frame", Width = 115, SortMode = DataGridViewColumnSortMode.NotSortable };
+        messageType.Items.AddRange("Standard", "Extended");
+        _messageGrid.Columns.Add(messageType);
+        _messageGrid.Columns.Add(new DataGridViewTextBoxColumn { Name = "id", HeaderText = "Identifier", Width = 150, SortMode = DataGridViewColumnSortMode.NotSortable });
+        _messageGrid.Columns.Add(new DataGridViewTextBoxColumn { Name = "name", HeaderText = "Message name", AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill, SortMode = DataGridViewColumnSortMode.NotSortable });
+        foreach (var message in _drafts)
+            _messageGrid.Rows.Add(message.IsExtended ? "Extended" : "Standard", FormatIdentifier(message.Identifier, message.IsExtended), message.Name);
+        _messageGrid.SelectionChanged += (_, _) => SelectMessageRow();
+        root.Controls.Add(_messageGrid, 0, 2);
+
+        _signalGrid = CreateGrid();
+        _signalGrid.SelectionMode = DataGridViewSelectionMode.FullRowSelect;
+        _signalGrid.Columns.Add(new DataGridViewTextBoxColumn { Name = "start", HeaderText = "Start byte", Width = 90, SortMode = DataGridViewColumnSortMode.NotSortable });
+        _signalGrid.Columns.Add(new DataGridViewTextBoxColumn { Name = "length", HeaderText = "Bytes", Width = 70, SortMode = DataGridViewColumnSortMode.NotSortable });
+        var kind = new DataGridViewComboBoxColumn { Name = "kind", HeaderText = "Value", Width = 105, SortMode = DataGridViewColumnSortMode.NotSortable };
+        kind.Items.AddRange("Unsigned", "Signed", "Boolean");
+        _signalGrid.Columns.Add(kind);
+        var byteOrder = new DataGridViewComboBoxColumn { Name = "order", HeaderText = "Byte order", Width = 115, SortMode = DataGridViewColumnSortMode.NotSortable };
+        byteOrder.Items.AddRange("LittleEndian", "BigEndian");
+        _signalGrid.Columns.Add(byteOrder);
+        _signalGrid.Columns.Add(new DataGridViewTextBoxColumn { Name = "scale", HeaderText = "Scale", Width = 100, SortMode = DataGridViewColumnSortMode.NotSortable });
+        _signalGrid.Columns.Add(new DataGridViewTextBoxColumn { Name = "unit", HeaderText = "Unit", Width = 90, SortMode = DataGridViewColumnSortMode.NotSortable });
+        _signalGrid.Columns.Add(new DataGridViewTextBoxColumn { Name = "name", HeaderText = "Signal name", AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill, SortMode = DataGridViewColumnSortMode.NotSortable });
+        root.Controls.Add(_signalGrid, 0, 3);
+
+        var buttons = new Panel { Dock = DockStyle.Fill, BackColor = Canvas };
+        var leftButtons = new FlowLayoutPanel { Dock = DockStyle.Left, AutoSize = true, WrapContents = false, BackColor = Canvas };
+        var addMessage = CreateButton("Add message", Teal, Raised, 110);
+        addMessage.Click += (_, _) => AddMessage();
+        var deleteMessage = CreateButton("Delete message", TextMuted, Raised, 125);
+        deleteMessage.Click += (_, _) => DeleteMessage();
+        var addSignal = CreateButton("Add signal", Teal, Raised, 95);
+        addSignal.Click += (_, _) => AddSignal();
+        var deleteSignal = CreateButton("Delete signal", TextMuted, Raised, 110);
+        deleteSignal.Click += (_, _) => DeleteSignal();
+        leftButtons.Controls.Add(addMessage);
+        leftButtons.Controls.Add(deleteMessage);
+        leftButtons.Controls.Add(addSignal);
+        leftButtons.Controls.Add(deleteSignal);
+        buttons.Controls.Add(leftButtons);
+
+        var rightButtons = new FlowLayoutPanel { Dock = DockStyle.Right, AutoSize = true, FlowDirection = FlowDirection.RightToLeft, WrapContents = false, BackColor = Canvas };
+        var save = CreateButton("Save declarations", Teal, Raised, 135);
+        save.Click += (_, _) => SaveDeclarations();
+        var cancel = CreateButton("Cancel", TextMuted, Raised, 90);
+        cancel.Click += (_, _) => { DialogResult = DialogResult.Cancel; Close(); };
+        rightButtons.Controls.Add(save);
+        rightButtons.Controls.Add(cancel);
+        buttons.Controls.Add(rightButtons);
+        root.Controls.Add(buttons, 0, 4);
+
+        AcceptButton = save;
+        CancelButton = cancel;
+        ReloadMessageRows(_drafts.Count == 0 ? -1 : 0);
+    }
+
+    private static DataGridView CreateGrid()
+    {
+        var grid = new DataGridView
+        {
+            Dock = DockStyle.Fill,
+            BackgroundColor = Surface,
+            BorderStyle = BorderStyle.None,
+            GridColor = Border,
+            RowHeadersVisible = false,
+            AllowUserToAddRows = false,
+            AllowUserToDeleteRows = false,
+            EnableHeadersVisualStyles = false,
+            AutoGenerateColumns = false,
+            SelectionMode = DataGridViewSelectionMode.FullRowSelect,
+            EditMode = DataGridViewEditMode.EditOnEnter,
+            ColumnHeadersHeight = 34,
+            RowTemplate = { Height = 31 }
+        };
+        grid.ColumnHeadersDefaultCellStyle = new DataGridViewCellStyle { BackColor = Raised, ForeColor = TextMuted, Font = new Font("Segoe UI Semibold", 8F), Padding = new Padding(8, 0, 4, 0) };
+        grid.DefaultCellStyle = new DataGridViewCellStyle { BackColor = Surface, ForeColor = TextPrimary, SelectionBackColor = Color.FromArgb(37, 78, 81), SelectionForeColor = TextPrimary, Padding = new Padding(8, 0, 4, 0) };
+        grid.AlternatingRowsDefaultCellStyle = new DataGridViewCellStyle { BackColor = Color.FromArgb(25, 34, 47) };
+        return grid;
+    }
+
+    private void SelectMessageRow()
+    {
+        if (_loading)
+            return;
+        var newIndex = _messageGrid.CurrentRow?.Index ?? -1;
+        if (newIndex == _selectedMessageIndex)
+            return;
+
+        if (_selectedMessageIndex >= 0 && !TryCommitDraft(_selectedMessageIndex, out var error))
+        {
+            MessageBox.Show(this, error, "Message declaration", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            _loading = true;
+            if (_selectedMessageIndex < _messageGrid.Rows.Count)
+                _messageGrid.Rows[_selectedMessageIndex].Selected = true;
+            _loading = false;
+            return;
+        }
+
+        _selectedMessageIndex = newIndex;
+        LoadSignals(_selectedMessageIndex >= 0 && _selectedMessageIndex < _drafts.Count ? _drafts[_selectedMessageIndex] : null);
+    }
+
+    private void LoadSignals(MessageDraft? message)
+    {
+        _loading = true;
+        _signalGrid.Rows.Clear();
+        if (message is not null)
+        {
+            foreach (var signal in message.Signals)
+            {
+                _signalGrid.Rows.Add(
+                    signal.StartByte,
+                    signal.Length,
+                    signal.ValueKind.ToString(),
+                    signal.ByteOrder.ToString(),
+                    signal.Scale.ToString("R", CultureInfo.InvariantCulture),
+                    signal.Unit,
+                    signal.Name);
+            }
+        }
+        _loading = false;
+    }
+
+    private void AddMessage()
+    {
+        if (!CommitSelectedDraft())
+            return;
+        _drafts.Add(new MessageDraft { Name = "New message" });
+        ReloadMessageRows(_drafts.Count - 1);
+    }
+
+    private void DeleteMessage()
+    {
+        if (_selectedMessageIndex < 0 || _selectedMessageIndex >= _drafts.Count)
+            return;
+        _drafts.RemoveAt(_selectedMessageIndex);
+        ReloadMessageRows(Math.Min(_selectedMessageIndex, _drafts.Count - 1));
+    }
+
+    private void AddSignal()
+    {
+        if (!CommitSelectedDraft())
+            return;
+        _signalGrid.Rows.Add(0, 1, "Unsigned", "LittleEndian", "1", string.Empty, "New signal");
+    }
+
+    private void DeleteSignal()
+    {
+        if (_signalGrid.CurrentRow is not null && _signalGrid.CurrentRow.Index >= 0)
+            _signalGrid.Rows.RemoveAt(_signalGrid.CurrentRow.Index);
+    }
+
+    private void ReloadMessageRows(int selectedIndex)
+    {
+        _loading = true;
+        _messageGrid.Rows.Clear();
+        foreach (var message in _drafts)
+            _messageGrid.Rows.Add(message.IsExtended ? "Extended" : "Standard", FormatIdentifier(message.Identifier, message.IsExtended), message.Name);
+        if (selectedIndex >= 0 && selectedIndex < _messageGrid.Rows.Count)
+            _messageGrid.Rows[selectedIndex].Selected = true;
+        _loading = false;
+        _selectedMessageIndex = -1;
+        if (selectedIndex >= 0)
+        {
+            _messageGrid.CurrentCell = _messageGrid.Rows[selectedIndex].Cells[0];
+            SelectMessageRow();
+        }
+        else
+            LoadSignals(null);
+    }
+
+    private bool CommitSelectedDraft()
+    {
+        if (_selectedMessageIndex < 0)
+            return true;
+        if (TryCommitDraft(_selectedMessageIndex, out var error))
+            return true;
+        MessageBox.Show(this, error, "Message declaration", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        return false;
+    }
+
+    private bool TryCommitDraft(int index, out string error)
+    {
+        error = string.Empty;
+        if (index < 0 || index >= _drafts.Count)
+            return true;
+        var draft = _drafts[index];
+        if (!TryReadMessage(_messageGrid.Rows[index], draft, out error))
+            return false;
+        return TryReadSignals(draft, out error);
+    }
+
+    private bool TryReadMessage(DataGridViewRow row, MessageDraft draft, out string error)
+    {
+        error = string.Empty;
+        var type = row.Cells[0].Value?.ToString() ?? string.Empty;
+        var idText = row.Cells[1].Value?.ToString()?.Trim() ?? string.Empty;
+        var name = row.Cells[2].Value?.ToString()?.Trim() ?? string.Empty;
+        var cleanId = idText.StartsWith("0x", StringComparison.OrdinalIgnoreCase) ? idText[2..] : idText;
+        if (!uint.TryParse(cleanId, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var identifier))
+        {
+            error = $"'{idText}' is not a valid hexadecimal CAN identifier.";
+            return false;
+        }
+        if (!type.Equals("Standard", StringComparison.OrdinalIgnoreCase) && !type.Equals("Extended", StringComparison.OrdinalIgnoreCase))
+        {
+            error = "Select Standard or Extended for every message.";
+            return false;
+        }
+        if (name.Length == 0)
+        {
+            error = "Every message must have a name.";
+            return false;
+        }
+        draft.Identifier = identifier;
+        draft.IsExtended = type.Equals("Extended", StringComparison.OrdinalIgnoreCase);
+        draft.Name = name;
+        return true;
+    }
+
+    private bool TryReadSignals(MessageDraft draft, out string error)
+    {
+        error = string.Empty;
+        var signals = new List<CanSignalDefinition>();
+        foreach (DataGridViewRow row in _signalGrid.Rows)
+        {
+            var name = row.Cells[6].Value?.ToString()?.Trim() ?? string.Empty;
+            if (name.Length == 0)
+                continue;
+            if (!int.TryParse(row.Cells[0].Value?.ToString(), out var startByte) ||
+                !int.TryParse(row.Cells[1].Value?.ToString(), out var length) ||
+                startByte < 0 || length is < 1 or > 8 || startByte + length > 8)
+            {
+                error = $"Signal '{name}' must use a valid byte range within bytes 0 through 7.";
+                return false;
+            }
+            if (!Enum.TryParse<CanSignalValueKind>(row.Cells[2].Value?.ToString(), true, out var valueKind) ||
+                !Enum.TryParse<CanSignalByteOrder>(row.Cells[3].Value?.ToString(), true, out var byteOrder) ||
+                !double.TryParse(row.Cells[4].Value?.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var scale))
+            {
+                error = $"Signal '{name}' has an invalid value type, byte order, or scale.";
+                return false;
+            }
+            var unit = row.Cells[5].Value?.ToString()?.Trim() ?? string.Empty;
+            signals.Add(new CanSignalDefinition(startByte, length, name, valueKind, byteOrder, scale, unit));
+        }
+        draft.Signals = signals;
+        return true;
+    }
+
+    private void SaveDeclarations()
+    {
+        if (!CommitSelectedDraft())
+            return;
+
+        var keys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        for (var index = 0; index < _drafts.Count; index++)
+        {
+            if (!TryReadMessage(_messageGrid.Rows[index], _drafts[index], out var error))
+            {
+                MessageBox.Show(this, $"Message {index + 1}: {error}", "Could not save declarations", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+            if (!keys.Add(_drafts[index].Key))
+            {
+                MessageBox.Show(this, $"The message identifier {FormatIdentifier(_drafts[index].Identifier, _drafts[index].IsExtended)} is declared more than once.", "Could not save declarations", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+        }
+
+        try
+        {
+            _registry.ReplaceMessages(_drafts.Select(draft => draft.ToDefinition()));
+            _registry.Save();
+            DialogResult = DialogResult.OK;
+            Close();
+        }
+        catch (Exception exception)
+        {
+            MessageBox.Show(this, exception.Message, "Could not save declarations", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+    }
+
+    private static string FormatIdentifier(uint identifier, bool isExtended)
+        => isExtended ? $"0x{identifier:X8}" : $"0x{identifier:X3}";
+
+    private static Button CreateButton(string text, Color foreground, Color background, int width)
+        => new() { Text = text, Width = width, Height = 30, FlatStyle = FlatStyle.Flat, FlatAppearance = { BorderColor = Border }, BackColor = background, ForeColor = foreground, Font = new Font("Segoe UI Semibold", 8.5F), Margin = new Padding(8, 0, 0, 0) };
+
+    private sealed class MessageDraft
+    {
+        public MessageDraft() { }
+
+        public MessageDraft(CanMessageDefinition message)
+        {
+            Identifier = message.Identifier;
+            IsExtended = message.IsExtended;
+            Name = message.Name;
+            Signals = message.Signals.ToList();
+        }
+
+        public uint Identifier { get; set; }
+        public bool IsExtended { get; set; }
+        public string Name { get; set; } = string.Empty;
+        public List<CanSignalDefinition> Signals { get; set; } = [];
+        public string Key => IdentifierRegistry.MakeKey(Identifier, IsExtended);
+
+        public CanMessageDefinition ToDefinition()
+            => new(Identifier, IsExtended, Name, Signals.ToArray());
+    }
 }
 
 public sealed class IdentifierListNameForm : Form
